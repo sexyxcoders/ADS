@@ -36,62 +36,69 @@ user_manager = UserClientManager(bot, db)
 @bot.on_message(filters.command("start") & filters.private)
 async def start_command(client: Client, message: Message):
     user_id = message.from_user.id
-    username = message.from_user.username
-    
-    # Add user to database
+    username = message.from_user.username or "User"
+
+    # Save user
     db.add_user(user_id, username)
-    
-    # Check if user is member of force join channel
-    if not await check_channel_membership(client, user_id, FORCE_JOIN_CHANNEL):
+
+    # 🔒 FORCE JOIN CHECK
+    is_member = await check_channel_membership(client, user_id, FORCE_JOIN_CHANNEL)
+
+    if not is_member:
+        # Detect if using username or invite link
+        if str(FORCE_JOIN_CHANNEL).startswith("@"):
+            join_link = f"https://t.me/{FORCE_JOIN_CHANNEL.replace('@', '')}"
+        else:
+            # If channel ID is used, you MUST put invite link in config
+            join_link = FORCE_JOIN_LINK  # <-- add this in config for private channels
+
         await message.reply_text(
-            f"⚠️ **Please join our main channel first!**\n\n"
-            f"Join: {FORCE_JOIN_CHANNEL}\n\n"
-            f"After joining, click /start again.",
+            "⚠️ **You must join our main channel to use this bot.**\n\n"
+            "After joining, press /start again.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Join Channel", url=f"https://t.me/{FORCE_JOIN_CHANNEL.replace('@', '')}")]
+                [InlineKeyboardButton("📢 Join Channel", url=join_link)]
             ])
         )
         return
-    
-    user = db.get_user(user_id)
-    
-    welcome_text = f"""
-🤖 **Welcome to Telegram Ads Forwarding BOT!**
 
-👤 User: {username or 'User'}
-📊 Status: {'🌟 Premium' if user and user['is_premium'] else '🆓 Free'}
+    # Fetch user safely
+    user = db.get_user(user_id) or {}
 
-**🔹 What I can do:**
-✅ Forward your ads to multiple groups automatically
-✅ Manage your ad campaigns
-✅ Track forwarding logs
-✅ Notify you when mentioned in groups
+    is_premium = user.get("is_premium", False)
 
-**📋 Available Commands:**
-/login - Login with your Telegram account
-/setad - Set your advertisement
-/addgroups - Add groups for forwarding
-/start_ads - Start forwarding automation
-/stop_ads - Stop forwarding automation
-/status - Check your bot status
-/delay - Set forwarding delay (Premium only)
-/plans - View premium plans
-/help - Get help
+    welcome_text = (
+        "🤖 **Welcome to Telegram Ads Forwarding BOT!**\n\n"
+        f"👤 User: {username}\n"
+        f"📊 Status: {'🌟 Premium' if is_premium else '🆓 Free'}\n\n"
+        "**🔹 What I can do:**\n"
+        "✅ Forward your ads to multiple groups automatically\n"
+        "✅ Manage your ad campaigns\n"
+        "✅ Track forwarding logs\n"
+        "✅ Notify you when mentioned in groups\n\n"
+        "**📋 Available Commands:**\n"
+        "/login - Login with your Telegram account\n"
+        "/setad - Set your advertisement\n"
+        "/addgroups - Add groups for forwarding\n"
+        "/start_ads - Start forwarding automation\n"
+        "/stop_ads - Stop forwarding automation\n"
+        "/status - Check your bot status\n"
+        "/delay - Set forwarding delay (Premium only)\n"
+        "/plans - View premium plans\n"
+        "/help - Get help\n\n"
+        "**🎯 Get Started:**\n"
+        "1. /login\n"
+        "2. /setad\n"
+        "3. /addgroups\n"
+        "4. /start_ads"
+    )
 
-**🎯 Get Started:**
-1. Use /login to connect your account
-2. Use /setad to set your advertisement
-3. Use /addgroups to add groups
-4. Use /start_ads to begin automation!
-    """
-    
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📱 Login Now", callback_data="start_login")],
         [InlineKeyboardButton("💎 View Plans", callback_data="view_plans")],
         [InlineKeyboardButton("❓ Help", callback_data="help")]
     ])
-    
-    await message.reply_text(welcome_text, reply_markup=keyboard)
+
+    await message.reply_text(welcome_text, reply_markup=keyboard, disable_web_page_preview=True)
 
 # Help command
 @bot.on_message(filters.command("help") & filters.private)

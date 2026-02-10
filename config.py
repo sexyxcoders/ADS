@@ -14,6 +14,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///bot_database.db")
 # Admin Configuration
 OWNER_ID = int(os.getenv("OWNER_ID", "2083251445"))
 FORCE_JOIN_CHANNEL = os.getenv("FORCE_JOIN_CHANNEL", "@TechyNetwork")
+FORCE_JOIN_LINK = "https://t.me/TechyNetwork"  # Invite link
 
 # Bot Username (without @)
 BOT_USERNAME = os.getenv("BOT_USERNAME", "kidoramusicbot")

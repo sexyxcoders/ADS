@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bot Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8525366225:AAG_nUH9HfmDz8TpBxg-gt2pMDesnfY71L4")
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 
@@ -13,10 +13,10 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///bot_database.db")
 
 # Admin Configuration
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
-FORCE_JOIN_CHANNEL = os.getenv("FORCE_JOIN_CHANNEL", "@YourMainChannel")
+FORCE_JOIN_CHANNEL = os.getenv("FORCE_JOIN_CHANNEL", "@TechyNetwork")
 
 # Bot Username (without @)
-BOT_USERNAME = os.getenv("BOT_USERNAME", "YourBot")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "kidoramusicbot")
 
 # Tier Configuration
 FREE_TIER = {

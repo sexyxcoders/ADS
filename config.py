@@ -5,8 +5,8 @@ load_dotenv()
 
 # Bot Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8525366225:AAG_nUH9HfmDz8TpBxg-gt2pMDesnfY71L4")
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
+API_ID = int(os.getenv("API_ID", "22657083"))
+API_HASH = os.getenv("API_HASH", "d6186691704bd901bdab275ceaab88f3")
 
 # Database
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///bot_database.db")

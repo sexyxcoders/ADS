@@ -1,77 +1,81 @@
-"""
-🧰 Utility Functions - Production Version
-Used across handlers, admin, automation
-"""
-
+import re
 import time
 import asyncio
-from collections import defaultdict
-from datetime import timedelta
-from pyrogram.errors import FloodWait
+from collections import defaultdict, deque
 
-
-# =========================================================
-# 🚦 ANTI FLOOD SYSTEM
-# =========================================================
-class AntiFlood:
-    def __init__(self, max_requests=5, window=timedelta(seconds=10)):
-        self.max_requests = max_requests
-        self.window = window.total_seconds()
-        self.users = defaultdict(list)
-
-    async def check(self, user_id: int) -> bool:
-        now = time.time()
-
-        # Remove expired timestamps
-        self.users[user_id] = [
-            t for t in self.users[user_id] if now - t < self.window
-        ]
-
-        # Add new request
-        self.users[user_id].append(now)
-
-        return len(self.users[user_id]) <= self.max_requests
-
-
-# =========================================================
-# 🔢 SAFE INT
-# =========================================================
+# -----------------------------
+# SAFE INT
+# -----------------------------
 def safe_int(value, default=0):
     try:
         return int(value)
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 
-# =========================================================
-# 🧼 SANITIZE INPUT
-# =========================================================
-def sanitize_input(text):
-    return str(text).strip()
+# -----------------------------
+# INPUT SANITIZER
+# -----------------------------
+def sanitize_input(text: str, max_length: int = 4000) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    text = re.sub(r"[<>]", "", text)  # prevent html injection
+    return text[:max_length]
 
 
-# =========================================================
-# 👥 FETCH USER GROUPS FROM USER ACCOUNT
-# =========================================================
-async def get_user_groups_from_account(user_client):
+# -----------------------------
+# ANTI FLOOD CLASS
+# -----------------------------
+class AntiFlood:
+    def __init__(self, limit=5, per_seconds=10):
+        self.limit = limit
+        self.per_seconds = per_seconds
+        self.users = defaultdict(deque)
+
+    def check(self, user_id):
+        now = time.time()
+        q = self.users[user_id]
+
+        while q and now - q[0] > self.per_seconds:
+            q.popleft()
+
+        if len(q) >= self.limit:
+            return False
+
+        q.append(now)
+        return True
+
+
+# -----------------------------
+# RATE LIMIT CHECK (ASYNC SAFE)
+# -----------------------------
+rate_limits = defaultdict(lambda: {"last": 0, "cooldown": 3})
+
+async def rate_limit_check(user_id: int, cooldown: int = 3):
+    now = time.time()
+    last = rate_limits[user_id]["last"]
+
+    if now - last < cooldown:
+        return False
+
+    rate_limits[user_id]["last"] = now
+    return True
+
+
+# -----------------------------
+# GET USER GROUPS FROM ACCOUNT
+# (for user session clients)
+# -----------------------------
+async def get_user_groups_from_account(client):
     groups = []
-
     try:
-        async for dialog in user_client.get_dialogs():
-            try:
-                chat = dialog.chat
-                if chat.type in ("group", "supergroup"):
-                    groups.append({
-                        "id": chat.id,
-                        "title": chat.title
-                    })
-
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
-            except Exception:
-                continue
-
+        async for dialog in client.get_dialogs():
+            if dialog.chat.type in ["group", "supergroup"]:
+                groups.append({
+                    "id": dialog.chat.id,
+                    "title": dialog.chat.title
+                })
     except Exception as e:
-        print(f"Group fetch error: {e}")
-
+        print("Group fetch error:", e)
     return groups

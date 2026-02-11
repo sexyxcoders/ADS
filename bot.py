@@ -1,366 +1,403 @@
 import os
 import asyncio
-import re
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pyrogram.errors import (
-    FloodWait, UserNotParticipant, ChatAdminRequired, UsernameNotOccupied, 
-    ChannelPrivate, PeerIdInvalid, ChatMemberStatus
-)
+from pyrogram.errors import FloodWait, UserNotParticipant, ChatAdminRequired
 from datetime import datetime, timedelta
 import logging
 
 from config import *
 from database import Database
 from user_client import UserClientManager
-from utils import (
-    check_channel_membership, format_time, log_success, log_error, 
-    log_info, log_warning, extract_chat_id
-)
+from utils import format_time
 
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO if not DEBUG_MODE else logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log')),
-        logging.StreamHandler()
-    ]
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Initialize components
-bot = Client("ads_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Initialize bot
+bot = Client(
+    "ads_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
+
+# Initialize database
 db = Database()
+
+# Initialize user client manager
 user_manager = UserClientManager(bot, db)
 
-# Global state
-force_join_pending_users = set()
-login_states = {}
-
-# ===========================================
-# 🔒 FORCE JOIN SYSTEM (PRODUCTION READY)
-# ===========================================
-async def get_channel_join_link():
-    """Get proper channel join link"""
-    if FORCE_JOIN_LINK and FORCE_JOIN_LINK.startswith("http"):
-        return FORCE_JOIN_LINK
-    channel = FORCE_JOIN_CHANNEL.lstrip('@')
-    return f"https://t.me/{channel}"
-
-async def is_user_member(client: Client, user_id: int, channel_id: str) -> bool:
-    """✅ FIXED: Handle ALL ChatMemberStatus types"""
-    try:
-        member = await client.get_chat_member(channel_id, user_id)
-        status = member.status
-        
-        # ✅ FIXED: Handle ALL valid statuses
-        valid_statuses = {
-            "member", "administrator", "creator", 
-            ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, 
-            ChatMemberStatus.OWNER, ChatMemberStatus.CREATOR
-        }
-        
-        is_valid = status in valid_statuses or "member" in str(status).lower()
-        
-        if is_valid:
-            log_success(f"User {user_id} verified in {channel_id}")
-            return True
-            
-        log_warning(f"Invalid status '{status}' for {user_id} in {channel_id}")
-        return False
-        
-    except UserNotParticipant:
-        log_info(f"User {user_id} not participant in {channel_id}")
-        return False
-    except (ChatAdminRequired, PeerIdInvalid, UsernameNotOccupied, ChannelPrivate):
-        log_error(f"Channel error {channel_id}: {type(e).__name__}")
-        return False
-    except FloodWait as e:
-        log_warning(f"FloodWait {e.value}s for {user_id}")
-        await asyncio.sleep(e.value)
-        return False
-    except Exception as e:
-        log_error(f"Membership check failed: {e}")
-        return False
-
-async def force_join_check(client: Client, user_id: int, message: Message = None) -> bool:
-    """Comprehensive force join with timeout tracking"""
-    try:
-        # Skip for owner
-        if user_id == OWNER_ID:
-            return True
-            
-        channel_id = FORCE_JOIN_CHANNEL
-        is_member = await check_channel_membership(client, user_id, channel_id)
-        
-        if not is_member:
-            join_link = await get_channel_join_link()
-            channel_display = FORCE_JOIN_CHANNEL.replace('@', '')
-            
-            join_text = (
-                f"🔒 **Join Required**\n\n"
-                f"📢 **Channel:** {channel_display}\n\n"
-                f"👇 **Join first, then /start**\n\n"
-                f"⏰ **Timeout:** {FORCE_JOIN_TIMEOUT_MINUTES}min"
-            )
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📢 Join Channel", url=join_link)],
-                [InlineKeyboardButton("🔄 Verify", callback_data=f"verify_join_{user_id}")]
-            ])
-            
-            force_join_pending_users.add(user_id)
-            
-            target = message.reply_text if message else lambda t, **k: client.send_message(user_id, t, **k)
-            await target(join_text, reply_markup=keyboard, disable_web_page_preview=True)
-            
-            # Schedule timeout
-            asyncio.create_task(join_timeout(user_id))
-            return False
-        
-        # ✅ Member verified
-        force_join_pending_users.discard(user_id)
-        return True
-        
-    except Exception as e:
-        log_error(f"Force join error {user_id}: {e}")
-        return False
-
-async def join_timeout(user_id: int):
-    """Auto-remove after timeout"""
-    await asyncio.sleep(FORCE_JOIN_TIMEOUT_MINUTES * 60)
-    force_join_pending_users.discard(user_id)
-    log_info(f"Timeout expired for pending user {user_id}")
-
-# ===========================================
-# 🎯 MAIN COMMANDS
-# ===========================================
+# Start command
 @bot.on_message(filters.command("start") & filters.private)
-async def cmd_start(client: Client, message: Message):
+async def start_command(client: Client, message: Message):
     user_id = message.from_user.id
-    username = message.from_user.username or "User"
-    
-    # Always save user
+    username = message.from_user.username
+
+    # Add user to database
     db.add_user(user_id, username)
-    
-    # Force join check
-    if not await force_join_check(client, user_id, message):
-        return
-    
-    # Welcome screen
-    user_data = db.get_user(user_id) or {}
-    is_premium = user_data.get("is_premium", False)
-    
-    welcome = (
-        f"🤖 **Welcome {username}!**\n\n"
-        f"👤 `ID:` `{user_id}`\n"
-        f"⭐ **Plan:** {'💎 Premium' if is_premium else '🆓 Free'}\n\n"
-        "**🚀 Get Started:**\n"
-        f"• `/login` - Link account\n"
-        f"• `/status` - Dashboard\n"
-        f"• `/plans` - Upgrade"
-    )
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔐 Login", callback_data="login_phone")],
-        [InlineKeyboardButton("📊 Status", callback_data="user_status")],
-        [InlineKeyboardButton("💎 Plans", callback_data="show_plans")],
-        [InlineKeyboardButton("📖 Help", callback_data="show_help")]
-    ])
-    
-    await message.reply_text(welcome, reply_markup=keyboard, parse_mode="markdown")
 
-@bot.on_message(filters.command(["help", "menu"]) & filters.private)
-async def cmd_help(client: Client, message: Message):
-    if not await force_join_check(client, message.from_user.id, message):
-        return
-        
-    help_text = """
-📖 **Commands:**
+    user = db.get_user(user_id)
 
-🔐 **Account**
-`/login` `/status` `/logout`
+    welcome_text = f"""
+🤖 **Welcome to Telegram Ads Forwarding BOT!**
 
-📢 **Ads**
-`/setad` `/viewad` `/clearad`
+👤 User: {username or 'User'}
+📊 Status: {'🌟 Premium' if user and user['is_premium'] else '🆓 Free'}
 
-👥 **Groups**  
-`/addgroups` `/listgroups` `/removegroup`
+**🔹 What I can do:**
+✅ Forward your ads to multiple groups automatically
+✅ Manage your ad campaigns
+✅ Track forwarding logs
+✅ Notify you when mentioned in groups
 
-⚙️ **Control**
-`/start_ads` `/stop_ads` `/delay <seconds>`
+**📋 Available Commands:**
+/login - Login with your Telegram account
+/setad - Set your advertisement
+/addgroups - Add groups for forwarding
+/start_ads - Start forwarding automation
+/stop_ads - Stop forwarding automation
+/status - Check your bot status
+/delay - Set forwarding delay (Premium only)
+/plans - View premium plans
+/help - Get help
 
-💎 **Premium**
-`/plans` `/upgrade`
+**🎯 Get Started:**
+1. Use /login to connect your account
+2. Use /setad to set your advertisement
+3. Use /addgroups to add groups
+4. Use /start_ads to begin automation!
     """
-    
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 Login Now", callback_data="start_login")],
+        [InlineKeyboardButton("💎 View Plans", callback_data="view_plans")],
+        [InlineKeyboardButton("❓ Help", callback_data="help")]
+    ])
+
+    await message.reply_text(welcome_text, reply_markup=keyboard)
+
+# Help command
+@bot.on_message(filters.command("help") & filters.private)
+async def help_command(client: Client, message: Message):
+    help_text = """
+📖 **Bot Commands Guide**
+
+**🔐 Account Management:**
+/login - Login with your Telegram account session
+/logout - Logout and remove your session
+
+**📢 Ad Management:**
+/setad - Set/update your advertisement (text or media)
+/viewad - View your current advertisement
+
+**👥 Group Management:**
+/addgroups - Add groups for ad forwarding
+/listgroups - View all your groups
+/removegroup - Remove a group
+
+**⚙️ Automation:**
+/start_ads - Start automatic forwarding
+/stop_ads - Stop automatic forwarding
+/status - Check bot status and statistics
+
+**💎 Premium Features:**
+/delay - Set custom forwarding delay (10s - 10min)
+/plans - View available premium plans
+/upgrade - Upgrade to premium
+
+**👨‍💼 Admin Commands (Owner only):**
+/ownerads - Manage promotional ads
+/broadcast - Broadcast owner ads to free users
+/payments - View pending payment requests
+/approve - Approve payment request
+/stats - View bot statistics
+
+**🔔 Features:**
+• Auto log channel for forwarding reports
+• Mention notifications in groups
+• Bio/Name lock (Free tier)
+• Custom delays (Premium)
+    """
     await message.reply_text(help_text)
 
-# ===========================================
-# 📊 STATUS & DASHBOARD
-# ===========================================
+# Login command
+@bot.on_message(filters.command("login") & filters.private)
+async def login_command(client: Client, message: Message):
+    user_id = message.from_user.id
+
+    login_text = """
+🔐 **Login to Your Telegram Account**
+
+To use this bot, you need to login with your Telegram account session.
+
+**⚠️ Important Notes:**
+• Your session is stored securely
+• We never access your messages or contacts
+• You can logout anytime with /logout
+• Use only your own account
+
+**📱 How to login:**
+1. Click "Start Login" below
+2. Enter your phone number (with country code)
+3. Enter the OTP code you receive
+4. Enter 2FA password if you have one
+
+**Ready to login?**
+    """
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔑 Start Login", callback_data="start_login")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_login")]
+    ])
+
+    await message.reply_text(login_text, reply_markup=keyboard)
+
+# Status command
 @bot.on_message(filters.command("status") & filters.private)
-async def cmd_status(client: Client, message: Message):
-    if not await force_join_check(client, message.from_user.id, message):
-        return
-        
-    await show_dashboard(client, message, message.from_user.id)
+async def status_command(client: Client, message: Message):
+    user_id = message.from_user.id
+    user = db.get_user(user_id)
 
-async def show_dashboard(client: Client, context, user_id: int):
-    """Unified dashboard"""
-    user = db.get_user(user_id) or {}
-    groups = len(db.get_user_groups(user_id))
-    has_ad = bool(db.get_active_ad(user_id))
-    is_running = user.get("is_active", False)
-    
-    dashboard = (
-        f"📊 **Dashboard**\n\n"
-        f"👤 **User:** `{user_id}`\n"
-        f"📱 **Phone:** `{user.get('phone', 'Not logged in')}`\n"
-        f"⭐ **Plan:** {'💎 Premium' if user.get('is_premium') else '🆓 Free'}\n\n"
-        f"📢 **Ad:** {'✅ Set' if has_ad else '❌ None'}\n"
-        f"👥 **Groups:** `{groups}`\n"
-        f"⚙️ **Status:** {'🟢 Live' if is_running else '🔴 Stopped'}"
-    )
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Refresh", callback_data="user_status")],
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings_menu")],
-        [InlineKeyboardButton("🔙 Home", callback_data="main_menu")]
-    ])
-    
-    if isinstance(context, Message):
-        await context.reply_text(dashboard, reply_markup=keyboard, parse_mode="markdown")
+    if not user or not user['session_string']:
+        await message.reply_text("❌ You haven't logged in yet. Use /login to get started.")
+        return
+
+    groups = db.get_user_groups(user_id)
+    ad = db.get_active_ad(user_id)
+
+    is_premium = user['is_premium'] and user['subscription_expires'] and \
+                 datetime.fromisoformat(user['subscription_expires']) > datetime.now()
+
+    status_text = f"""
+📊 **Your Bot Status**
+
+👤 **Account Info:**
+• User ID: `{user_id}`
+• Phone: `{user['phone_number'] or 'Not set'}`
+• Tier: {'🌟 Premium' if is_premium else '🆓 Free'}
+
+📢 **Advertisement:**
+• Status: {'✅ Set' if ad else '❌ Not set'}
+{'• Ad Text: ' + (ad['ad_text'][:50] + '...' if len(ad['ad_text']) > 50 else ad['ad_text']) if ad else ''}
+
+👥 **Groups:**
+• Total Groups: {len(groups)}
+• Groups: {', '.join([g['group_name'] for g in groups[:5]]) if groups else 'None'}
+
+⚙️ **Automation:**
+• Status: {'🟢 Active' if user['is_active'] else '🔴 Stopped'}
+• Delay: {user['delay_seconds']} seconds
+• Log Channel: {'✅ Created' if user['log_channel_id'] else '⏳ Pending'}
+
+📈 **Subscription:**
+"""
+
+    if is_premium:
+        expires = datetime.fromisoformat(user['subscription_expires'])
+        days_left = (expires - datetime.now()).days
+        status_text += f"• Expires: {expires.strftime('%Y-%m-%d')}\n"
+        status_text += f"• Days Left: {days_left} days\n"
     else:
-        await context.edit_text(dashboard, reply_markup=keyboard, parse_mode="markdown")
+        status_text += "• Type: Free tier\n"
+        status_text += "• Min Delay: 5 minutes\n"
+        status_text += "• Upgrade: /plans\n"
 
-# ===========================================
-# 💎 PLANS & UPGRADE
-# ===========================================
-@bot.on_message(filters.command("plans") & filters.private)
-async def cmd_plans(client: Client, message: Message):
-    if not await force_join_check(client, message.from_user.id, message):
-        return
-    
-    plans_text = "💎 **Subscription Plans**\n\n"
-    for plan_id, plan in PRICING.items():
-        plans_text += f"**{plan['name']}** - ₹{plan['price']}/mo\n"
-    
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Buy Now", callback_data="buy_premium")],
-        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")]
+        [InlineKeyboardButton("🔄 Refresh", callback_data="refresh_status")],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
     ])
-    
-    await message.reply_text(plans_text, reply_markup=keyboard, parse_mode="markdown")
 
-# ===========================================
-# 👑 ADMIN COMMANDS
-# ===========================================
-@bot.on_message(filters.command(["stats", "broadcast"]) & filters.user(OWNER_ID))
-async def admin_cmds(client: Client, message: Message):
-    if message.command[0] == "stats":
-        users = len(db.get_all_users())
-        active = len([u for u in db.get_all_users() if u.get("is_active")])
-        premium = len([u for u in db.get_all_users() if u.get("is_premium")])
-        
-        stats = (
-            f"📊 **Admin Stats**\n\n"
-            f"👥 **Total:** `{users}`\n"
-            f"🟢 **Active:** `{active}`\n"
-            f"💎 **Premium:** `{premium}`"
-        )
-        await message.reply_text(stats, parse_mode="markdown")
-    
-    elif message.command[0] == "broadcast":
-        # Broadcast implementation
-        pass
+    await message.reply_text(status_text, reply_markup=keyboard)
 
-# ===========================================
-# 🖱️ CALLBACK HANDLER (FIXED)
-# ===========================================
+# Set ad command
+@bot.on_message(filters.command("setad") & filters.private)
+async def setad_command(client: Client, message: Message):
+    user_id = message.from_user.id
+    user = db.get_user(user_id)
+
+    if not user or not user['session_string']:
+        await message.reply_text("❌ You haven't logged in yet. Use /login first.")
+        return
+
+    await message.reply_text(
+        "📢 **Set Your Advertisement**\n\n"
+        "Please send me your advertisement message. You can send:\n"
+        "• Text message\n"
+        "• Photo with caption\n"
+        "• Video with caption\n\n"
+        "This will be forwarded to all your groups.\n\n"
+        "Send /cancel to cancel."
+    )
+
+# Plans command
+@bot.on_message(filters.command("plans") & filters.private)
+async def plans_command(client: Client, message: Message):
+    plans_text = """
+💎 **Premium Plans**
+
+**🆓 Free Plan:**
+• Unlimited groups
+• 5 minutes minimum delay
+• Forced footer on ads
+• Owner promotional ads
+• Bio/Name locked to bot
+
+**💰 Basic Plan - ₹199/month:**
+• Unlimited groups
+• 10 seconds minimum delay
+• No forced footer
+• No owner ads
+• Free bio/name
+
+**🚀 Pro Plan - ₹399/month:**
+• All Basic features
+• Priority support
+• Advanced analytics
+• Custom features
+
+**⭐ Unlimited Plan - ₹599/month:**
+• All Pro features
+• Fastest forwarding
+• Dedicated support
+• Early access to new features
+
+**💳 How to upgrade:**
+Use /upgrade to start the payment process.
+    """
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💎 Upgrade Now", callback_data="upgrade_premium")],
+        [InlineKeyboardButton("🔙 Back", callback_data="back_home")]
+    ])
+
+    await message.reply_text(plans_text, reply_markup=keyboard)
+
+# Admin: Owner ads
+@bot.on_message(filters.command("ownerads") & filters.private & filters.user(OWNER_ID))
+async def owner_ads_command(client: Client, message: Message):
+    await message.reply_text(
+        "📢 **Manage Owner Promotional Ads**\n\n"
+        "Send me the advertisement you want to save.\n"
+        "This ad will be used for promotional purposes on free user accounts.\n\n"
+        "Send /cancel to cancel."
+    )
+
+# Admin: Broadcast owner ads
+@bot.on_message(filters.command("broadcast") & filters.private & filters.user(OWNER_ID))
+async def broadcast_command(client: Client, message: Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.reply_text("Usage: /broadcast <ad_id>")
+        return
+
+    try:
+        ad_id = int(args[1])
+    except:
+        await message.reply_text("❌ Invalid ad ID")
+        return
+
+    await message.reply_text(f"🚀 Starting broadcast of owner ad #{ad_id} to free users...")
+
+    # This will trigger owner ads through free user accounts
+    await user_manager.broadcast_owner_ad(ad_id)
+
+    await message.reply_text("✅ Broadcast completed!")
+
+# Admin: View stats
+@bot.on_message(filters.command("stats") & filters.private & filters.user(OWNER_ID))
+async def stats_command(client: Client, message: Message):
+    active_users = db.get_active_users()
+    free_users = db.get_free_users()
+
+    stats_text = f"""
+📊 **Bot Statistics**
+
+👥 **Users:**
+• Total Active: {len(active_users)}
+• Free Users: {len(free_users)}
+• Premium Users: {len(active_users) - len(free_users)}
+
+⚙️ **System:**
+• Running Sessions: {len(user_manager.active_sessions)}
+• Database: Connected
+• Bot: Online
+
+📈 **Activity:**
+• Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+    """
+
+    await message.reply_text(stats_text)
+
+# Callback query handler
 @bot.on_callback_query()
-async def cb_handler(client: Client, callback: CallbackQuery):
+async def callback_handler(client: Client, callback: CallbackQuery):
     data = callback.data
     user_id = callback.from_user.id
-    
-    try:
-        if data.startswith("verify_join_"):
-            if await force_join_check(client, user_id):
-                await callback.message.delete()
-                await cmd_start(client, callback.message)
-            else:
-                await callback.answer("❌ Join channel first!", show_alert=True)
-                
-        elif data == "login_phone":
-            await callback.message.edit_text(
-                "📱 **Enter Phone:**\n`+1234567890`\n\nSend now:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="main_menu")]
-                ]),
-                parse_mode="markdown"
-            )
-            login_states[user_id] = "phone"
-            
-        elif data in ["user_status", "main_menu", "show_plans", "show_help"]:
-            if data == "user_status":
-                await show_dashboard(client, callback, user_id)
-            elif data == "main_menu":
-                await callback.message.delete()
-                await cmd_start(client, callback.message)
-            # Handle others...
-            
-        else:
-            await callback.answer("⏳ Coming soon!")
-            
-    except Exception as e:
-        log_error(f"Callback {data} error: {e}")
-        await callback.answer("⚠️ Error occurred", show_alert=True)
 
-# ===========================================
-# 💬 MESSAGE HANDLER
-# ===========================================
-@bot.on_message(filters.private & ~filters.command(["start"]))
-async def msg_handler(client: Client, message: Message):
+    if data == "start_login":
+        await callback.message.edit_text(
+            "🔐 **Starting Login Process**\n\n"
+            "Please send your phone number with country code.\n"
+            "Example: +1234567890\n\n"
+            "Send /cancel to cancel."
+        )
+        user_manager.login_states[user_id] = "awaiting_phone"
+
+    elif data == "view_plans":
+        await plans_command(client, callback.message)
+
+    elif data == "help":
+        await help_command(client, callback.message)
+
+    elif data == "upgrade_premium":
+        await callback.message.edit_text(
+            "💎 **Upgrade to Premium**\n\n"
+            "Choose your plan:\n\n"
+            "💰 Basic - ₹199/month\n"
+            "🚀 Pro - ₹399/month\n"
+            "⭐ Unlimited - ₹599/month\n\n"
+            "Reply with: /upgrade <plan_name>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back", callback_data="back_home")]
+            ])
+        )
+
+    await callback.answer()
+
+# Message handler for login flow and ad setup
+@bot.on_message(filters.private & ~filters.command(["start", "help", "login", "status", "plans"]))
+async def message_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    
+
     # Handle login flow
-    if user_id in login_states:
+    if user_id in user_manager.login_states:
         await user_manager.handle_login_flow(message)
         return
-    
-    # Force join pending
-    if user_id in force_join_pending_users:
-        await force_join_check(client, user_id, message)
-        return
-    
-    # Auto-force join other commands
-    await force_join_check(client, user_id, message)
 
-# ===========================================
-# 🚀 MAIN FUNCTION (FIXED)
-# ===========================================
+    # Handle ad setup
+    # (Implementation continues in user_client.py)
+
+# Main function
 async def main():
-    """Production startup"""
-    log_info("🤖 Starting AdForward Bot...")
-    
-    # Cleanup
-    startup_cleanup()
-    
-    # Start components
+    logger.info("🤖 Starting Telegram Ads Forwarding BOT...")
+
+    # Create sessions directory
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+    # Start bot
     await bot.start()
-    log_success("✅ Bot connected!")
-    
+    logger.info("✅ Bot started successfully!")
+
+    # Start user client manager
     await user_manager.start()
-    log_success("✅ User manager ready!")
-    
-    log_success("🚀 Bot fully operational!")
+
+    # Keep the bot running
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        log_info("👋 Bot stopped by user")
-    except Exception as e:
-        log_error(f"💥 Fatal error: {e}")
+    asyncio.run(main())

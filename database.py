@@ -369,3 +369,51 @@ class Database:
             """, (payment_id,))
             conn.commit()
             conn.close()
+
+# ================= ASYNC COMPATIBILITY LAYER =================
+
+class AsyncDatabase(Database):
+    """
+    Wrapper to make old sync Database work with new async architecture.
+    No data loss. No rewrite needed.
+    """
+
+    async def init(self):
+        # already initialized in __init__
+        return
+
+    async def add_user(self, *args, **kwargs):
+        return await asyncio.to_thread(super().add_user, *args, **kwargs)
+
+    async def get_user(self, *args, **kwargs):
+        return await asyncio.to_thread(super().get_user, *args, **kwargs)
+
+    async def update_user_session(self, *args, **kwargs):
+        return await asyncio.to_thread(super().update_user_session, *args, **kwargs)
+
+    async def update_user_premium(self, *args, **kwargs):
+        return await asyncio.to_thread(super().update_user_premium, *args, **kwargs)
+
+    async def update_user_delay(self, *args, **kwargs):
+        return await asyncio.to_thread(super().update_user_delay, *args, **kwargs)
+
+    async def set_user_active(self, *args, **kwargs):
+        return await asyncio.to_thread(super().set_user_active, *args, **kwargs)
+
+    async def get_user_groups(self, *args, **kwargs):
+        return await asyncio.to_thread(super().get_user_groups, *args, **kwargs)
+
+    async def get_active_ad(self, *args, **kwargs):
+        return await asyncio.to_thread(super().get_active_ad, *args, **kwargs)
+
+    async def save_ad(self, *args, **kwargs):
+        return await asyncio.to_thread(super().save_ad, *args, **kwargs)
+
+    async def get_active_users(self):
+        return await asyncio.to_thread(super().get_active_users)
+
+    async def get_free_users(self):
+        return await asyncio.to_thread(super().get_free_users)
+
+    async def close(self):
+        return

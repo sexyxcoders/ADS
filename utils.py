@@ -1,23 +1,31 @@
-import time
-from collections import defaultdict
+from pyrogram.errors import FloodWait
+import asyncio
 
+async def get_user_groups_from_account(user_client):
+    """
+    Fetch all groups where user account is member/admin
+    """
+    groups = []
 
-class AntiFlood:
-    def __init__(self, limit=5, time_window=10):
-        self.limit = limit
-        self.time_window = time_window
-        self.users = defaultdict(list)
+    try:
+        async for dialog in user_client.get_dialogs():
+            try:
+                chat = dialog.chat
 
-    def check(self, user_id):
-        now = time.time()
-        timestamps = self.users[user_id]
+                # Only groups & supergroups
+                if chat.type in ("group", "supergroup"):
+                    groups.append({
+                        "id": chat.id,
+                        "title": chat.title
+                    })
 
-        # Remove old timestamps
-        self.users[user_id] = [t for t in timestamps if now - t < self.time_window]
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
 
-        # Add new action
-        self.users[user_id].append(now)
+            except Exception:
+                continue
 
-        if len(self.users[user_id]) > self.limit:
-            return False  # Flooding
-        return True
+    except Exception as e:
+        print(f"Group fetch error: {e}")
+
+    return groups

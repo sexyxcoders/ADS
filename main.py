@@ -2,6 +2,7 @@
 """
 Telegram Ads Forwarding BOT
 Main entry point with all handlers integrated
+No Force Join Required
 """
 
 import os
@@ -9,6 +10,7 @@ import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 import logging
+from datetime import datetime
 
 from config import *
 from database import Database
@@ -16,7 +18,6 @@ from user_client import UserClientManager
 from handlers import AdHandler, GroupHandler, AutomationHandler, DelayHandler, UpgradeHandler
 from admin_handlers import AdminHandler
 from advanced_handlers import AdvancedCommandHandlers
-from utils import check_channel_membership
 
 # Setup logging
 logging.basicConfig(
@@ -58,24 +59,12 @@ advanced_handlers = AdvancedCommandHandlers(bot, db, user_manager)
 async def start_command(client: Client, message: Message):
     user_id = message.from_user.id
     username = message.from_user.username
-    
+
     # Add user to database
     db.add_user(user_id, username)
-    
-    # Check channel membership
-    if not await check_channel_membership(client, user_id, FORCE_JOIN_CHANNEL):
-        await message.reply_text(
-            f"⚠️ **Please join our main channel first!**\n\n"
-            f"Join: {FORCE_JOIN_CHANNEL}\n\n"
-            f"After joining, send /start again.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Join Channel", url=f"https://t.me/{FORCE_JOIN_CHANNEL.replace('@', '')}")]
-            ])
-        )
-        return
-    
+
     user = db.get_user(user_id)
-    
+
     welcome_text = f"""
 🤖 **Welcome to Telegram Ads Forwarding BOT!**
 
@@ -103,8 +92,14 @@ async def start_command(client: Client, message: Message):
 /templates - Ad templates
 /help - All commands
     """
-    
-    await message.reply_text(welcome_text)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 Login Now", callback_data="login_now")],
+        [InlineKeyboardButton("📝 View Templates", callback_data="show_templates")],
+        [InlineKeyboardButton("💎 Premium Plans", callback_data="show_plans")]
+    ])
+
+    await message.reply_text(welcome_text, reply_markup=keyboard, disable_web_page_preview=True)
 
 @bot.on_message(filters.command("help") & filters.private)
 async def help_command(client: Client, message: Message):
@@ -164,24 +159,23 @@ async def help_command(client: Client, message: Message):
 /broadcast - Broadcast owner ad
 /broadcasttext - Broadcast message
     """
-    await message.reply_text(help_text)
+    await message.reply_text(help_text, disable_web_page_preview=True)
 
 @bot.on_message(filters.command("login") & filters.private)
 async def login_command(client: Client, message: Message):
     user_id = message.from_user.id
-    
-    if not await check_channel_membership(client, user_id, FORCE_JOIN_CHANNEL):
-        await message.reply_text(f"⚠️ Please join {FORCE_JOIN_CHANNEL} first!")
-        return
-    
+
     user = db.get_user(user_id)
     if user and user['session_string']:
         await message.reply_text(
             "✅ You're already logged in!\n\n"
-            "Use /logout to logout and login again."
+            "Use /logout to logout and login again.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔐 Logout", callback_data="do_logout")]
+            ])
         )
         return
-    
+
     login_text = """
 🔐 **Login to Your Telegram Account**
 
@@ -199,20 +193,20 @@ async def login_command(client: Client, message: Message):
 **Ready?** Send your phone number with country code.
 Example: +1234567890
 
-Send /cancel to cancel.
+Send /cancel to cancel anytime.
     """
-    
-    await message.reply_text(login_text)
+
+    await message.reply_text(login_text, disable_web_page_preview=True)
     user_manager.login_states[user_id] = "awaiting_phone"
 
 @bot.on_message(filters.command("logout") & filters.private)
 async def logout_command(client: Client, message: Message):
     user_id = message.from_user.id
-    
+
     # Stop automation
     db.set_user_active(user_id, False)
     await user_manager.stop_automation(user_id)
-    
+
     # Disconnect session
     if user_id in user_manager.active_sessions:
         try:
@@ -220,45 +214,52 @@ async def logout_command(client: Client, message: Message):
             del user_manager.active_sessions[user_id]
         except:
             pass
-    
+
     # Remove from database
     conn = db.get_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET session_string = NULL, is_active = 0 WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
-    
+
     await message.reply_text(
         "✅ **Logged Out Successfully!**\n\n"
         "Your session has been removed.\n"
-        "Use /login to login again."
+        "Use /login to login again.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔐 Login Again", callback_data="login_now")]
+        ])
     )
 
 @bot.on_message(filters.command("status") & filters.private)
 async def status_command(client: Client, message: Message):
     user_id = message.from_user.id
     user = db.get_user(user_id)
-    
+
     if not user:
         await message.reply_text("❌ User not found. Use /start first.")
         return
-    
+
     if not user['session_string']:
-        await message.reply_text("❌ Not logged in. Use /login to get started.")
+        await message.reply_text(
+            "❌ Not logged in. Use /login to get started.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔐 Login", callback_data="login_now")]
+            ])
+        )
         return
-    
+
     groups = db.get_user_groups(user_id)
     ad = db.get_active_ad(user_id)
-    
-    from datetime import datetime
+
     is_premium = user['is_premium'] and user['subscription_expires'] and \
                  datetime.fromisoformat(user['subscription_expires']) > datetime.now()
-    
+
     status_text = f"""
 📊 **Your Status**
 
 👤 **Account:**
-• Phone: {user['phone_number']}
+• Phone: {user['phone_number'] or 'Not set'}
 • Tier: {'🌟 Premium' if is_premium else '🆓 Free'}
 
 📢 **Ad:** {'✅ Set' if ad else '❌ Not set'}
@@ -268,22 +269,33 @@ async def status_command(client: Client, message: Message):
 
 📈 **Subscription:**
     """
-    
+
     if is_premium:
         expires = datetime.fromisoformat(user['subscription_expires'])
         days_left = (expires - datetime.now()).days
         status_text += f"• Expires: {expires.strftime('%Y-%m-%d')}\n• Days left: {days_left}"
     else:
         status_text += "• Free tier (5 min delay)\n• Upgrade: /plans"
-    
-    await message.reply_text(status_text)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Refresh", callback_data="refresh_status")],
+        [InlineKeyboardButton("⚙️ Manage Groups", callback_data="manage_groups")],
+        [InlineKeyboardButton("💎 Upgrade", callback_data="show_plans")]
+    ])
+
+    await message.reply_text(status_text, reply_markup=keyboard, disable_web_page_preview=True)
 
 # Ad commands
 @bot.on_message(filters.command("setad") & filters.private)
 async def setad_command(client: Client, message: Message):
     user = db.get_user(message.from_user.id)
     if not user or not user['session_string']:
-        await message.reply_text("❌ Please login first: /login")
+        await message.reply_text(
+            "❌ Please login first: /login",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔐 Login", callback_data="login_now")]
+            ])
+        )
         return
     await ad_handler.start_ad_setup(message)
 
@@ -293,7 +305,7 @@ async def viewad_command(client: Client, message: Message):
     if not ad:
         await message.reply_text("❌ No ad set. Use /setad to create one.")
         return
-    
+
     if ad['media_type'] and ad['media_file_id']:
         if ad['media_type'] == 'photo':
             await message.reply_photo(ad['media_file_id'], caption=ad['ad_text'])
@@ -356,7 +368,13 @@ async def plans_command(client: Client, message: Message):
 
 **Upgrade:** /upgrade <plan>
     """
-    await message.reply_text(plans_text)
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💎 Upgrade Now", callback_data="upgrade_menu")],
+        [InlineKeyboardButton("📖 Help", callback_data="show_help")]
+    ])
+    
+    await message.reply_text(plans_text, reply_markup=keyboard, disable_web_page_preview=True)
 
 @bot.on_message(filters.command("upgrade") & filters.private)
 async def upgrade_command(client: Client, message: Message):
@@ -389,7 +407,7 @@ async def broadcast_command(client: Client, message: Message):
     if len(args) < 2:
         await message.reply_text("Usage: /broadcast <ad_id>")
         return
-    
+
     try:
         ad_id = int(args[1])
         await message.reply_text(f"🚀 Broadcasting ad #{ad_id}...")
@@ -471,78 +489,115 @@ async def checkhealth_command(client: Client, message: Message):
 async def schedule_command(client: Client, message: Message):
     await advanced_handlers.schedule_command(message)
 
-# Callback handler for analytics
+# ============ CALLBACK HANDLERS ============
+
 @bot.on_callback_query()
 async def callback_handler(client: Client, callback_query):
     data = callback_query.data
     user_id = callback_query.from_user.id
-    
-    if data.startswith("analytics_"):
+
+    if data == "login_now":
+        await login_command(client, callback_query.message)
+    elif data == "show_templates":
+        await templates_command(client, callback_query.message)
+    elif data == "show_plans":
+        await plans_command(client, callback_query.message)
+    elif data == "do_logout":
+        await logout_command(client, callback_query.message)
+    elif data == "refresh_status":
+        await status_command(client, callback_query.message)
+    elif data == "manage_groups":
+        await listgroups_command(client, callback_query.message)
+    elif data == "show_help":
+        await help_command(client, callback_query.message)
+    elif data.startswith("analytics_"):
         days = data.split("_")[1]
         if days == "all":
             days = 365
         else:
             days = int(days)
-        
+
         text = await advanced_handlers.show_analytics(user_id, days)
         await callback_query.message.edit_text(text)
-        await callback_query.answer()
+    elif data == "upgrade_menu":
+        await upgrade_command(client, callback_query.message)
+
+    await callback_query.answer()
 
 # Message handler for flows
-@bot.on_message(filters.private & ~filters.command([]))
+@bot.on_message(filters.private & ~filters.command([
+    "start", "help", "login", "logout", "status", "setad", "viewad", 
+    "addgroups", "listgroups", "start_ads", "stop_ads", "delay", 
+    "plans", "upgrade", "stats", "payments", "approve", "reject",
+    "ownerads", "broadcast", "broadcasttext", "analytics", "report",
+    "weeklyreport", "myads", "togglead", "autorotate", "pausegroup",
+    "resumegroup", "vipgroup", "groupstats", "referral", "templates",
+    "template", "checkhealth", "schedule"
+]))
 async def message_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    
+
     # Handle login flow
     if user_id in user_manager.login_states:
         await user_manager.handle_login_flow(message)
         return
-    
+
     # Handle ad setup
     if user_id in ad_handler.ad_setup_state:
         await ad_handler.handle_ad_message(message)
         return
-    
+
     # Handle owner ad setup
-    if user_id in admin_handler.owner_ad_state:
+    if user_id == OWNER_ID and user_id in admin_handler.owner_ad_state:
         await admin_handler.handle_owner_ad(message)
         return
-    
+
     # Handle payment proof
     if user_id in upgrade_handler.upgrade_state and message.photo:
         await upgrade_handler.handle_payment_proof(message)
         return
 
+    # Default response for unknown commands
+    await message.reply_text(
+        "❓ Unknown command. Use /help to see all available commands.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📖 Help", callback_data="show_help")]
+        ])
+    )
+
 # Main function
 async def main():
-    logger.info("=" * 50)
+    logger.info("=" * 60)
     logger.info("🤖 Starting Telegram Ads Forwarding BOT")
-    logger.info("=" * 50)
-    
+    logger.info("🚀 No Force Join - Instant Access!")
+    logger.info("=" * 60)
+
     # Create sessions directory
     os.makedirs(SESSIONS_DIR, exist_ok=True)
     logger.info(f"📁 Sessions directory: {SESSIONS_DIR}")
-    
+
     # Start bot
     logger.info("🔄 Starting bot client...")
     await bot.start()
-    logger.info(f"✅ Bot started: @{(await bot.get_me()).username}")
-    
+    me = await bot.get_me()
+    logger.info(f"✅ Bot started: @{me.username} (ID: {me.id})")
+
     # Start user client manager
     logger.info("🔄 Loading user sessions...")
     await user_manager.start()
     logger.info(f"✅ Loaded {len(user_manager.active_sessions)} active sessions")
-    
-    logger.info("=" * 50)
-    logger.info("🎉 BOT IS READY!")
-    logger.info("=" * 50)
-    
+
+    logger.info("=" * 60)
+    logger.info("🎉 BOT IS FULLY READY!")
+    logger.info("📱 Users can start immediately with /start")
+    logger.info("=" * 60)
+
     # Keep running
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
     try:
-        bot.run(main())
+        asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("👋 Bot stopped by user")
     except Exception as e:
